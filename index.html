@@ -29,7 +29,7 @@
 <script>
 /* Supabase Project URL বসানো হয়েছে। শুধু নিজের Publishable Key বসান।
    sb_secret_ বা service_role key কখনো এখানে বসাবেন না। */
-const SUPABASE_URL = "https://grnowswofdexeuedtpb.supabase.co";
+const SUPABASE_URL = "https://grnownswofdexeuedtpb.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_IjIxiCxVYN5X9A-MpNu3tg_HfdHqLHi";
 const sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 let cloudUser = null, selectedAudioFile = null;
@@ -67,7 +67,7 @@ sbClient.auth.onAuthStateChange((_event, session) => {
 cloudEl("googleLogin").onclick = async () => {
   const { error } = await sbClient.auth.signInWithOAuth({
     provider: "google",
-    options: { redirectTo: window.location.origin + "/" }
+    options: { redirectTo: "https://ai-video-studio-881.pages.dev/" }
   });
   if (error) cloudMsg("Google Login error: " + error.message, "err");
 };
