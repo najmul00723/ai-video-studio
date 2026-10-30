@@ -9,6 +9,168 @@
 <section class="card"><h3>📄 JSON Scene Plan</h3><p class="sub">তোমার ভিডিও জেনারেশন JSON আপলোড করো।</p><div class="drop">🧩<br><b>JSON ফাইল নির্বাচন</b><br><input id="jf" type="file" accept=".json,application/json"></div><button id="load">JSON বিশ্লেষণ করো</button><button class="secondary" id="clear">রিসেট</button><div id="js" class="status">এখনো JSON নির্বাচন করা হয়নি।</div></section>
 <section class="card"><h3>🎙️ Voiceover Audio</h3><p class="sub">মূল বাংলা ভয়েসওভার MP3 অথবা WAV আপলোড করো।</p><div class="drop">🎧<br><b>অডিও ফাইল নির্বাচন</b><br><input id="af" type="file" accept="audio/*"></div><div id="as" class="status">এখনো অডিও আপলোড করা হয়নি।</div><audio id="player" controls hidden></audio></section></div>
 <section class="card"><h3>📊 Project Overview</h3><div class="stats"><div class="stat"><b id="count">0</b><span>মোট Scene</span></div><div class="stat"><b id="dur">0s</b><span>পরিকল্পিত দৈর্ঘ্য</span></div><div class="stat"><b id="aud">--</b><span>অডিও দৈর্ঘ্য</span></div></div><button class="secondary" id="report" disabled>Scene Report ডাউনলোড</button><button class="secondary" id="jsonout" disabled>JSON ডাউনলোড</button></section>
+
+<section class="card" id="cloudPanel">
+<h3>☁️ Google Login ও Cloud Project</h3>
+<p class="sub">Google দিয়ে লগইন করে নিজের Scene Plan এবং Voiceover অডিও Supabase-এ সংরক্ষণ করুন।</p>
+<button id="googleLogin">Google দিয়ে Login</button>
+<button id="googleLogout" class="secondary" hidden>Logout</button>
+<div id="cloudUser" class="status">লগইন করা হয়নি।</div>
+<div style="margin-top:12px">
+<label class="sub" for="cloudProjectName">Project-এর নাম</label><br>
+<input id="cloudProjectName" type="text" placeholder="আমার ভিডিও প্রজেক্ট" style="width:100%;padding:10px;background:#101a2a;border:1px solid #49617f;border-radius:8px">
+</div>
+<button id="cloudSave">☁️ Project Save করুন</button>
+<button id="cloudList" class="secondary">আমার Saved Projects</button>
+<div id="cloudStatus" class="status">Supabase সংযোগ প্রস্তুত করা হচ্ছে…</div>
+<div id="cloudProjects"></div>
+</section>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* Supabase Project URL বসানো হয়েছে। শুধু নিজের Publishable Key বসান।
+   sb_secret_ বা service_role key কখনো এখানে বসাবেন না। */
+const SUPABASE_URL = "https://grnowswofdexeuedtpb.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_IjIxiCxVYN5X9A-MpNu3tg_HfdHqLHi";
+const sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+let cloudUser = null, selectedAudioFile = null;
+
+const cloudEl = id => document.getElementById(id);
+const cloudMsg = (message, type="") => {
+  const node = cloudEl("cloudStatus");
+  node.textContent = message;
+  node.className = "status " + type;
+};
+
+cloudEl("af").addEventListener("change", () => {
+  selectedAudioFile = cloudEl("af").files[0] || null;
+});
+
+async function refreshCloudSession() {
+  const { data, error } = await sbClient.auth.getSession();
+  if (error) { cloudMsg("Login session error: " + error.message, "err"); return; }
+  cloudUser = data.session?.user || null;
+  cloudEl("googleLogin").hidden = !!cloudUser;
+  cloudEl("googleLogout").hidden = !cloudUser;
+  cloudEl("cloudUser").textContent = cloudUser
+    ? "লগইন হয়েছে: " + (cloudUser.email || cloudUser.id)
+    : "লগইন করা হয়নি।";
+}
+sbClient.auth.onAuthStateChange((_event, session) => {
+  cloudUser = session?.user || null;
+  cloudEl("googleLogin").hidden = !!cloudUser;
+  cloudEl("googleLogout").hidden = !cloudUser;
+  cloudEl("cloudUser").textContent = cloudUser
+    ? "লগইন হয়েছে: " + (cloudUser.email || cloudUser.id)
+    : "লগইন করা হয়নি।";
+});
+
+cloudEl("googleLogin").onclick = async () => {
+  const { error } = await sbClient.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo: window.location.origin + "/" }
+  });
+  if (error) cloudMsg("Google Login error: " + error.message, "err");
+};
+cloudEl("googleLogout").onclick = async () => {
+  const { error } = await sbClient.auth.signOut();
+  if (error) cloudMsg("Logout error: " + error.message, "err");
+  else cloudMsg("Logout হয়েছে।", "ok");
+};
+
+cloudEl("cloudSave").onclick = async () => {
+  if (!cloudUser) { cloudMsg("আগে Google দিয়ে Login করুন।", "err"); return; }
+  if (!data || !Array.isArray(items) || !items.length) {
+    cloudMsg("আগে JSON Scene Plan বিশ্লেষণ করুন।", "err"); return;
+  }
+  cloudMsg("Project সংরক্ষণ হচ্ছে…");
+  const projectName = cloudEl("cloudProjectName").value.trim() || "Untitled Project";
+  let audioPath = null;
+  const duration = Number(cloudEl("player").duration) || null;
+  try {
+    const { data: row, error: insertError } = await sbClient
+      .from("projects")
+      .insert({
+        user_id: cloudUser.id,
+        project_name: projectName,
+        scene_plan: data,
+        audio_duration: duration
+      })
+      .select("id")
+      .single();
+    if (insertError) throw insertError;
+
+    if (selectedAudioFile) {
+      const safeFileName = selectedAudioFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      audioPath = `${cloudUser.id}/${row.id}/${Date.now()}-${safeFileName}`;
+      const { error: uploadError } = await sbClient.storage
+        .from("audio-files")
+        .upload(audioPath, selectedAudioFile, {
+          upsert: false,
+          contentType: selectedAudioFile.type || "application/octet-stream"
+        });
+      if (uploadError) {
+        await sbClient.from("projects").delete().eq("id", row.id).eq("user_id", cloudUser.id);
+        throw uploadError;
+      }
+      const { error: updateError } = await sbClient.from("projects")
+        .update({ audio_path: audioPath })
+        .eq("id", row.id).eq("user_id", cloudUser.id);
+      if (updateError) throw updateError;
+    }
+    cloudMsg(`সফল! "${projectName}" Cloud-এ Save হয়েছে।`, "ok");
+    await loadCloudProjects();
+  } catch (error) {
+    cloudMsg("Save করতে সমস্যা: " + (error.message || String(error)), "err");
+  }
+};
+
+async function loadCloudProjects() {
+  if (!cloudUser) { cloudMsg("Saved Project দেখতে Login করুন।", "err"); return; }
+  const { data: rows, error } = await sbClient.from("projects")
+    .select("id,project_name,created_at")
+    .eq("user_id", cloudUser.id)
+    .order("created_at", { ascending: false })
+    .limit(30);
+  if (error) { cloudMsg("Project load error: " + error.message, "err"); return; }
+  const holder = cloudEl("cloudProjects");
+  if (!rows.length) { holder.textContent = "এখনো কোনো Project Save করা হয়নি।"; return; }
+  holder.innerHTML = "<h4>আপনার Saved Projects</h4>" + rows.map(row =>
+    `<div class="scene"><b>${String(row.project_name).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}</b>
+    <div class="muted">${new Date(row.created_at).toLocaleString("bn-BD")}</div>
+    <button class="secondary" data-cloud-open="${row.id}">Open</button></div>`
+  ).join("");
+  holder.querySelectorAll("[data-cloud-open]").forEach(button => {
+    button.onclick = () => openCloudProject(button.dataset.cloudOpen);
+  });
+}
+async function openCloudProject(projectId) {
+  const { data: project, error } = await sbClient.from("projects").select("*")
+    .eq("id", projectId).eq("user_id", cloudUser.id).single();
+  if (error) { cloudMsg("Project open error: " + error.message, "err"); return; }
+  data = project.scene_plan;
+  items = Array.isArray(data) ? data : (data?.scenes || data?.project?.scenes || []);
+  cloudEl("cloudProjectName").value = project.project_name || "";
+  cloudEl("count").textContent = items.length;
+  const total = items.reduce((sum, scene) => sum + (Number(scene.duration || scene.duration_seconds) || 0), 0);
+  cloudEl("dur").textContent = total ? fmt(total) : "N/A";
+  cloudEl("report").disabled = cloudEl("jsonout").disabled = !items.length;
+  render();
+  if (project.audio_path) {
+    const { data: signed, error: signedError } = await sbClient.storage
+      .from("audio-files").createSignedUrl(project.audio_path, 3600);
+    if (!signedError && signed?.signedUrl) {
+      const player = cloudEl("player");
+      player.src = signed.signedUrl; player.hidden = false;
+      cloudEl("aud").textContent = fmt(project.audio_duration);
+      status("as", "Saved Audio লোড হয়েছে।", "ok");
+    }
+  }
+  cloudMsg(`"${project.project_name}" Project খোলা হয়েছে।`, "ok");
+}
+cloudEl("cloudList").onclick = loadCloudProjects;
+refreshCloudSession();
+</script>
+
 <section class="card"><h3>🎞️ Scene Manager</h3><p class="sub">প্রতিটি Scene-এর ভয়েসওভার, Prompt ও ক্যামেরা নির্দেশনা এখানে দেখা যাবে।</p><div id="scenes" class="empty">প্রথমে JSON আপলোড করে বিশ্লেষণ করো।</div></section>
 <p class="muted" style="text-align:center">AI Video Studio • Version 1.0 • Local browser processing</p></main>
 <script>
