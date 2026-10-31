@@ -21,6 +21,7 @@
 <input id="cloudProjectName" type="text" placeholder="আমার ভিডিও প্রজেক্ট" style="width:100%;padding:10px;background:#101a2a;border:1px solid #49617f;border-radius:8px">
 </div>
 <button id="cloudSave">☁️ Project Save করুন</button>
+<button id="cancelEdit" class="secondary" hidden>Update বাতিল</button>
 <button id="cloudList" class="secondary">আমার Saved Projects</button>
 <div id="cloudStatus" class="status">Supabase সংযোগ প্রস্তুত করা হচ্ছে…</div>
 <div id="cloudProjects"></div>
@@ -32,7 +33,7 @@
 const SUPABASE_URL = "https://grnownswofdexeuedtpb.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_IjIxiCxVYN5X9A-MpNu3tg_HfdHqLHi";
 const sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
-let cloudUser = null, selectedAudioFile = null;
+let cloudUser = null, selectedAudioFile = null, selectedProjectId = null, currentAudioPath = null;
 
 const cloudEl = id => document.getElementById(id);
 const cloudMsg = (message, type="") => {
@@ -82,48 +83,85 @@ cloudEl("cloudSave").onclick = async () => {
   if (!data || !Array.isArray(items) || !items.length) {
     cloudMsg("আগে JSON Scene Plan বিশ্লেষণ করুন।", "err"); return;
   }
-  cloudMsg("Project সংরক্ষণ হচ্ছে…");
+
+  cloudMsg(selectedProjectId ? "Project Update হচ্ছে…" : "Project সংরক্ষণ হচ্ছে…");
   const projectName = cloudEl("cloudProjectName").value.trim() || "Untitled Project";
-  let audioPath = null;
   const duration = Number(cloudEl("player").duration) || null;
+
   try {
-    const { data: row, error: insertError } = await sbClient
-      .from("projects")
-      .insert({
-        user_id: cloudUser.id,
-        project_name: projectName,
-        scene_plan: data,
-        audio_duration: duration
-      })
-      .select("id")
-      .single();
-    if (insertError) throw insertError;
+    let projectId = selectedProjectId;
+    let audioPath = currentAudioPath;
+
+    if (!projectId) {
+      const { data: row, error } = await sbClient.from("projects")
+        .insert({
+          user_id: cloudUser.id,
+          project_name: projectName,
+          scene_plan: data,
+          audio_duration: duration
+        })
+        .select("id")
+        .single();
+      if (error) throw error;
+      projectId = row.id;
+    } else {
+      const { error } = await sbClient.from("projects")
+        .update({
+          project_name: projectName,
+          scene_plan: data,
+          audio_duration: duration,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", projectId)
+        .eq("user_id", cloudUser.id);
+      if (error) throw error;
+    }
 
     if (selectedAudioFile) {
       const safeFileName = selectedAudioFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      audioPath = `${cloudUser.id}/${row.id}/${Date.now()}-${safeFileName}`;
-      const { error: uploadError } = await sbClient.storage
-        .from("audio-files")
-        .upload(audioPath, selectedAudioFile, {
+      const newAudioPath = `${cloudUser.id}/${projectId}/${Date.now()}-${safeFileName}`;
+      const { error: uploadError } = await sbClient.storage.from("audio-files")
+        .upload(newAudioPath, selectedAudioFile, {
           upsert: false,
           contentType: selectedAudioFile.type || "application/octet-stream"
         });
-      if (uploadError) {
-        await sbClient.from("projects").delete().eq("id", row.id).eq("user_id", cloudUser.id);
-        throw uploadError;
+      if (uploadError) throw uploadError;
+
+      const { error: audioUpdateError } = await sbClient.from("projects")
+        .update({ audio_path: newAudioPath, audio_duration: duration })
+        .eq("id", projectId)
+        .eq("user_id", cloudUser.id);
+      if (audioUpdateError) throw audioUpdateError;
+
+      if (audioPath && audioPath !== newAudioPath) {
+        await sbClient.storage.from("audio-files").remove([audioPath]);
       }
-      const { error: updateError } = await sbClient.from("projects")
-        .update({ audio_path: audioPath })
-        .eq("id", row.id).eq("user_id", cloudUser.id);
-      if (updateError) throw updateError;
+      audioPath = newAudioPath;
+      currentAudioPath = newAudioPath;
+      selectedAudioFile = null;
+      cloudEl("af").value = "";
     }
-    cloudMsg(`সফল! "${projectName}" Cloud-এ Save হয়েছে।`, "ok");
+
+    selectedProjectId = projectId;
+    cloudEl("cloudSave").textContent = "☁️ Update Project";
+    cloudEl("cancelEdit").hidden = false;
+    cloudMsg(`সফল! "${projectName}" ${selectedProjectId ? "সংরক্ষিত/আপডেট" : "Save"} হয়েছে।`, "ok");
     await loadCloudProjects();
   } catch (error) {
-    cloudMsg("Save করতে সমস্যা: " + (error.message || String(error)), "err");
+    cloudMsg("Save/Update করতে সমস্যা: " + (error.message || String(error)), "err");
   }
 };
 
+cloudEl("cancelEdit").onclick = () => {
+  selectedProjectId = null;
+  currentAudioPath = null;
+  selectedAudioFile = null;
+  cloudEl("af").value = "";
+  cloudEl("cloudProjectName").value = "";
+  cloudEl("cloudSave").textContent = "☁️ Project Save করুন";
+  cloudEl("cancelEdit").hidden = true;
+  cloudMsg("নতুন Project তৈরি করার মোড চালু হয়েছে।", "ok");
+};
 async function loadCloudProjects() {
   if (!cloudUser) { cloudMsg("Saved Project দেখতে Login করুন।", "err"); return; }
   const { data: rows, error } = await sbClient.from("projects")
@@ -132,40 +170,105 @@ async function loadCloudProjects() {
     .order("created_at", { ascending: false })
     .limit(30);
   if (error) { cloudMsg("Project load error: " + error.message, "err"); return; }
+
   const holder = cloudEl("cloudProjects");
   if (!rows.length) { holder.textContent = "এখনো কোনো Project Save করা হয়নি।"; return; }
   holder.innerHTML = "<h4>আপনার Saved Projects</h4>" + rows.map(row =>
-    `<div class="scene"><b>${String(row.project_name).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}</b>
-    <div class="muted">${new Date(row.created_at).toLocaleString("bn-BD")}</div>
-    <button class="secondary" data-cloud-open="${row.id}">Open</button></div>`
+    `<div class="scene">
+      <b>${String(row.project_name).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}</b>
+      <div class="muted">${new Date(row.created_at).toLocaleString("bn-BD")}</div>
+      <button class="secondary" data-cloud-open="${row.id}">Open / Edit</button>
+      <button class="secondary" data-cloud-delete="${row.id}">Delete</button>
+    </div>`
   ).join("");
+
   holder.querySelectorAll("[data-cloud-open]").forEach(button => {
     button.onclick = () => openCloudProject(button.dataset.cloudOpen);
   });
+  holder.querySelectorAll("[data-cloud-delete]").forEach(button => {
+    button.onclick = () => deleteCloudProject(button.dataset.cloudDelete);
+  });
 }
+
+async function deleteCloudProject(projectId) {
+  if (!cloudUser) { cloudMsg("আগে Login করুন।", "err"); return; }
+  if (!confirm("এই Project স্থায়ীভাবে Delete করবেন?")) return;
+
+  try {
+    const { data: project, error: readError } = await sbClient.from("projects")
+      .select("id,audio_path")
+      .eq("id", projectId)
+      .eq("user_id", cloudUser.id)
+      .single();
+    if (readError) throw readError;
+
+    const { error: deleteError } = await sbClient.from("projects")
+      .delete()
+      .eq("id", projectId)
+      .eq("user_id", cloudUser.id);
+    if (deleteError) throw deleteError;
+
+    if (project.audio_path) {
+      const { error: storageError } = await sbClient.storage
+        .from("audio-files").remove([project.audio_path]);
+      if (storageError) cloudMsg("Project Delete হয়েছে, তবে Audio ফাইল মুছতে সমস্যা: " + storageError.message, "err");
+    }
+
+    if (selectedProjectId === projectId) {
+      selectedProjectId = null;
+      currentAudioPath = null;
+      selectedAudioFile = null;
+      cloudEl("cloudProjectName").value = "";
+      cloudEl("cloudSave").textContent = "☁️ Project Save করুন";
+      cloudEl("cancelEdit").hidden = true;
+    }
+    cloudMsg("Project Delete হয়েছে।", "ok");
+    await loadCloudProjects();
+  } catch (error) {
+    cloudMsg("Delete করতে সমস্যা: " + (error.message || String(error)), "err");
+  }
+}
+
 async function openCloudProject(projectId) {
   const { data: project, error } = await sbClient.from("projects").select("*")
     .eq("id", projectId).eq("user_id", cloudUser.id).single();
   if (error) { cloudMsg("Project open error: " + error.message, "err"); return; }
+
+  selectedProjectId = project.id;
+  currentAudioPath = project.audio_path || null;
+  selectedAudioFile = null;
+  cloudEl("af").value = "";
+  cloudEl("cloudProjectName").value = project.project_name || "";
+  cloudEl("cloudSave").textContent = "☁️ Update Project";
+  cloudEl("cancelEdit").hidden = false;
+
   data = project.scene_plan;
   items = Array.isArray(data) ? data : (data?.scenes || data?.project?.scenes || []);
-  cloudEl("cloudProjectName").value = project.project_name || "";
   cloudEl("count").textContent = items.length;
   const total = items.reduce((sum, scene) => sum + (Number(scene.duration || scene.duration_seconds) || 0), 0);
   cloudEl("dur").textContent = total ? fmt(total) : "N/A";
   cloudEl("report").disabled = cloudEl("jsonout").disabled = !items.length;
   render();
+
+  const player = cloudEl("player");
   if (project.audio_path) {
     const { data: signed, error: signedError } = await sbClient.storage
       .from("audio-files").createSignedUrl(project.audio_path, 3600);
     if (!signedError && signed?.signedUrl) {
-      const player = cloudEl("player");
-      player.src = signed.signedUrl; player.hidden = false;
+      player.src = signed.signedUrl;
+      player.hidden = false;
       cloudEl("aud").textContent = fmt(project.audio_duration);
       status("as", "Saved Audio লোড হয়েছে।", "ok");
+    } else {
+      status("as", "Audio URL তৈরি করা যায়নি: " + (signedError?.message || "Unknown error"), "err");
     }
+  } else {
+    player.removeAttribute("src");
+    player.hidden = true;
+    cloudEl("aud").textContent = "--";
+    status("as", "এই Project-এ Audio সংরক্ষিত নেই।");
   }
-  cloudMsg(`"${project.project_name}" Project খোলা হয়েছে।`, "ok");
+  cloudMsg(`"${project.project_name}" Project খোলা হয়েছে। এখন পরিবর্তন করে Update Project চাপুন।`, "ok");
 }
 cloudEl("cloudList").onclick = loadCloudProjects;
 refreshCloudSession();
